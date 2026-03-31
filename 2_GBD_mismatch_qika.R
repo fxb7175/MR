@@ -13,6 +13,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(stringr)
   library(countrycode)
+  library(tidyr)
   library(ggplot2)
   library(ggrepel)
   library(scales)
@@ -28,6 +29,8 @@ suppressPackageStartupMessages({
 YEAR_MODE <- 2018
 MIN_COVERAGE <- 80
 LABEL_N_PER_QUADRANT <- 5
+HIST_YEARS <- 2014:2018
+FUTURE_YEARS <- 2030:2050
 
 ANN6_FILE <- "W:/Current_Work/GBD_h/WHO_GDBS_2021_extracted_clean_csv/reviewed_from_manual/annex6_reviewed_from_manual.csv"
 ANN2_FILE <- "W:/Current_Work/GBD_h/WHO_GDBS_2021_extracted_clean_csv/reviewed_from_manual/annex2_reviewed_from_manual.csv"
@@ -153,7 +156,7 @@ pop_df <- gbd_population %>%
     metric = as.character(metric_name),
     population = as.numeric(val)
   ) %>%
-  filter(year %in% 2014:2018) %>%
+  filter(year %in% HIST_YEARS) %>%
   filter(str_detect(str_to_lower(sex), "both")) %>%
   filter(str_detect(str_to_lower(age), "all")) %>%
   filter(str_detect(str_to_lower(metric), "number")) %>%
@@ -174,7 +177,7 @@ death_df <- gbd_outcome %>%
     cause = as.character(cause_name),
     deaths = as.numeric(val)
   ) %>%
-  filter(year %in% 2014:2018) %>%
+  filter(year %in% HIST_YEARS) %>%
   filter(str_detect(str_to_lower(sex), "female")) %>%
   filter(str_detect(str_to_lower(age), "all")) %>%
   filter(str_detect(str_to_lower(measure), "death")) %>%
@@ -197,7 +200,7 @@ inc_df <- gbd_outcome %>%
     cause = as.character(cause_name),
     incidence = as.numeric(val)
   ) %>%
-  filter(year %in% 2014:2018) %>%
+  filter(year %in% HIST_YEARS) %>%
   filter(str_detect(str_to_lower(sex), "female")) %>%
   filter(str_detect(str_to_lower(age), "all")) %>%
   filter(str_detect(str_to_lower(measure), "incidence")) %>%
@@ -215,7 +218,7 @@ sdi_df <- sdi %>%
     year = as.integer(year_id),
     sdi = as.numeric(mean_value)
   ) %>%
-  filter(year %in% 2014:2018) %>%
+  filter(year %in% HIST_YEARS) %>%
   distinct() %>%
   mutate(iso3 = as_iso3(location)) %>%
   filter(!is.na(iso3)) %>%
@@ -461,6 +464,172 @@ doc <- body_add_break(doc)
 doc <- body_add_par(doc, paste0("Table 1. Top ", LABEL_N_PER_QUADRANT, " countries within each mismatch phenotype in ", YEAR_MODE), style = "heading 1")
 doc <- body_add_flextable(doc, value = flextable(table1_df))
 print(doc, target = out_docx)
+
+## =========================================================
+## 9. 预测模型：2030-2050 mismatch（按国家）
+## 思路：
+## - 用 2014-2018 历史数据分别拟合 log(rbc_per_1000) 与 log(dir_per_1000)
+## - 国家有 >=3 年数据：用国家斜率；否则回退到全局斜率 + 国家截距
+## - 预测后计算 mismatch = z(log(dir)) - z(log(rbc))（按年份标准化）
+## =========================================================
+who_hist <- ann6 %>%
+  transmute(
+    country = as.character(country),
+    year = as.integer(data_year),
+    units_red_cells = as.numeric(units_red_cells)
+  ) %>%
+  left_join(
+    ann2 %>% transmute(
+      country = as.character(country),
+      year = as.integer(data_year),
+      coverage_pct = as.numeric(coverage_pct_value)
+    ),
+    by = c("country", "year")
+  ) %>%
+  filter(!is.na(units_red_cells), units_red_cells > 0) %>%
+  filter(!is.na(coverage_pct), coverage_pct >= MIN_COVERAGE) %>%
+  filter(year %in% HIST_YEARS) %>%
+  mutate(iso3 = as_iso3(country)) %>%
+  filter(!is.na(iso3))
+
+hist_df <- who_hist %>%
+  left_join(pop_df %>% select(iso3, year, population), by = c("iso3", "year")) %>%
+  left_join(death_df %>% select(iso3, year, deaths), by = c("iso3", "year")) %>%
+  left_join(inc_df %>% select(iso3, year, incidence), by = c("iso3", "year")) %>%
+  mutate(
+    rbc_per_1000 = units_red_cells / population * 1000,
+    dir_per_1000 = deaths / incidence * 1000
+  ) %>%
+  filter(!is.na(rbc_per_1000), rbc_per_1000 > 0) %>%
+  filter(!is.na(dir_per_1000), dir_per_1000 > 0) %>%
+  select(iso3, country, year, rbc_per_1000, dir_per_1000) %>%
+  distinct()
+
+if (nrow(hist_df) > 0) {
+  global_rbc_mod <- lm(log(rbc_per_1000) ~ year, data = hist_df)
+  global_dir_mod <- lm(log(dir_per_1000) ~ year, data = hist_df)
+
+  global_rbc_slope <- as.numeric(coef(global_rbc_mod)["year"])
+  global_dir_slope <- as.numeric(coef(global_dir_mod)["year"])
+
+  country_rbc <- hist_df %>%
+    group_by(iso3, country) %>%
+    group_modify(~{
+      d <- .x
+      n_year <- n_distinct(d$year)
+      if (n_year >= 3) {
+        m <- lm(log(rbc_per_1000) ~ year, data = d)
+        tibble(
+          n_year = n_year,
+          intercept = as.numeric(coef(m)[1]),
+          slope = as.numeric(coef(m)["year"]),
+          model_type = "country_trend"
+        )
+      } else {
+        b0 <- mean(log(d$rbc_per_1000), na.rm = TRUE) - global_rbc_slope * mean(d$year, na.rm = TRUE)
+        tibble(
+          n_year = n_year,
+          intercept = b0,
+          slope = global_rbc_slope,
+          model_type = "global_slope_country_intercept"
+        )
+      }
+    }) %>%
+    ungroup()
+
+  country_dir <- hist_df %>%
+    group_by(iso3, country) %>%
+    group_modify(~{
+      d <- .x
+      n_year <- n_distinct(d$year)
+      if (n_year >= 3) {
+        m <- lm(log(dir_per_1000) ~ year, data = d)
+        tibble(
+          n_year = n_year,
+          intercept = as.numeric(coef(m)[1]),
+          slope = as.numeric(coef(m)["year"]),
+          model_type = "country_trend"
+        )
+      } else {
+        b0 <- mean(log(d$dir_per_1000), na.rm = TRUE) - global_dir_slope * mean(d$year, na.rm = TRUE)
+        tibble(
+          n_year = n_year,
+          intercept = b0,
+          slope = global_dir_slope,
+          model_type = "global_slope_country_intercept"
+        )
+      }
+    }) %>%
+    ungroup()
+
+  pred_grid <- tidyr::expand_grid(
+    iso3 = unique(hist_df$iso3),
+    year = FUTURE_YEARS
+  ) %>%
+    left_join(hist_df %>% distinct(iso3, country), by = "iso3")
+
+  pred_rbc <- pred_grid %>%
+    left_join(country_rbc %>% rename(rbc_intercept = intercept, rbc_slope = slope, rbc_model = model_type), by = c("iso3", "country")) %>%
+    mutate(rbc_per_1000_pred = exp(rbc_intercept + rbc_slope * year))
+
+  pred_all <- pred_rbc %>%
+    left_join(country_dir %>% rename(dir_intercept = intercept, dir_slope = slope, dir_model = model_type), by = c("iso3", "country")) %>%
+    mutate(dir_per_1000_pred = exp(dir_intercept + dir_slope * year)) %>%
+    group_by(year) %>%
+    mutate(
+      z_rbc = ifelse(sd(log(rbc_per_1000_pred), na.rm = TRUE) > 0,
+                     (log(rbc_per_1000_pred) - mean(log(rbc_per_1000_pred), na.rm = TRUE)) / sd(log(rbc_per_1000_pred), na.rm = TRUE),
+                     0),
+      z_dir = ifelse(sd(log(dir_per_1000_pred), na.rm = TRUE) > 0,
+                     (log(dir_per_1000_pred) - mean(log(dir_per_1000_pred), na.rm = TRUE)) / sd(log(dir_per_1000_pred), na.rm = TRUE),
+                     0),
+      mismatch_pred = z_dir - z_rbc
+    ) %>%
+    ungroup()
+
+  out_pred_tsv <- file.path(OUT_DIR, "mismatch_forecast_2030_2050.tsv")
+  out_pred_top <- file.path(OUT_DIR, "mismatch_forecast_top20_2050.tsv")
+  write_tsv(pred_all, out_pred_tsv)
+  write_tsv(pred_all %>% filter(year == max(FUTURE_YEARS)) %>% arrange(desc(mismatch_pred)) %>% slice_head(n = 20), out_pred_top)
+
+  # 预测趋势图：2050高风险国家（Top12）在2030-2050的 mismatch 轨迹
+  top_iso3 <- pred_all %>%
+    filter(year == max(FUTURE_YEARS)) %>%
+    arrange(desc(mismatch_pred)) %>%
+    slice_head(n = 12) %>%
+    pull(iso3)
+
+  pred_plot_dt <- pred_all %>% filter(iso3 %in% top_iso3)
+
+  p_pred <- ggplot(pred_plot_dt, aes(x = year, y = mismatch_pred, color = country, group = iso3)) +
+    geom_line(linewidth = 0.9, alpha = 0.9) +
+    geom_point(size = 1.8) +
+    labs(
+      title = "Forecasted mismatch trend (2030-2050)",
+      subtitle = "Top 12 predicted mismatch countries in 2050",
+      x = "Year",
+      y = "Predicted mismatch score",
+      color = "Country"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(linewidth = 0.3, colour = "grey90"),
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 10.5, colour = "grey35"),
+      legend.position = "right",
+      plot.margin = margin(10, 12, 10, 12)
+    )
+
+  out_pred_png <- file.path(OUT_DIR, "Figure_forecast_mismatch_2030_2050_top12.png")
+  out_pred_pdf <- file.path(OUT_DIR, "Figure_forecast_mismatch_2030_2050_top12.pdf")
+  ggsave(filename = out_pred_png, plot = p_pred, width = 10, height = 6.2, dpi = 450, bg = "white")
+  ggsave(filename = out_pred_pdf, plot = p_pred, width = 10, height = 6.2, device = "pdf", bg = "white")
+
+  cat("[OK] 已输出预测结果：\n", out_pred_tsv, "\n", out_pred_top, "\n", out_pred_pdf, "\n", sep = "")
+} else {
+  warning("历史数据为空，跳过 2030-2050 预测模块。")
+}
 
 cat("[DONE] 分析完成。输出目录：\n", OUT_DIR, "\n", sep = "")
 cat("主要文件：\n", out_plot_pdf, "\n", out_table_pdf, "\n", out_combo_pdf, "\n", out_docx, "\n", sep = "")
