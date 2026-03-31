@@ -33,6 +33,13 @@ COLOR_PALETTE <- "vik"
 SAVE_PNG <- TRUE
 SAVE_PDF <- TRUE
 
+# 投稿图留白设置（pt）：上、右、下、左
+MARGIN_TOP <- 12
+MARGIN_RIGHT_EQ <- 36
+MARGIN_RIGHT_FLIP <- 70
+MARGIN_BOTTOM <- 12
+MARGIN_LEFT <- 12
+
 
 ## =========================================================
 ## 2. 加载程序包
@@ -175,6 +182,124 @@ fwrite(manh_dt, out_all_tsv, sep = "\t")
 
 
 ## =========================================================
+## 5B. 补充美观汇总图（基于第一步结果）
+## 说明：
+##   - 不改 MR 统计逻辑，只做结果可视化
+##   - 输出到 base_dir，便于和主结果一起归档
+## =========================================================
+outcome_label_dt <- unique(manh_dt[, .(id.outcome, outcome_show)])
+
+## ---- 5B-1：CELL_TYPE × Outcome 的最小 FDR 热图 ----
+heat_dt <- manh_dt[, .(min_fdr = min(fdr, na.rm = TRUE)), by = .(CELL_TYPE, id.outcome)]
+heat_dt <- merge(heat_dt, outcome_label_dt, by = "id.outcome", all.x = TRUE)
+heat_dt[, outcome_show := fifelse(!is.na(outcome_show) & nzchar(outcome_show), outcome_show, id.outcome)]
+heat_dt[, neg_log10_min_fdr := -log10(pmax(min_fdr, 1e-300))]
+heat_dt[, sig_mark := fifelse(min_fdr <= FDR_CUT, "*", "")]
+
+p_heat <- ggplot(
+  heat_dt,
+  aes(x = outcome_show, y = CELL_TYPE, fill = neg_log10_min_fdr)
+) +
+  geom_tile(color = "white", linewidth = 0.25) +
+  geom_text(aes(label = sig_mark), size = 4.5, color = "black") +
+  scico::scale_fill_scico(
+    palette = "roma",
+    direction = 1,
+    name = expression(-log[10](min(FDR)))
+  ) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "MR summary heatmap by CELL_TYPE and outcome",
+    subtitle = paste0("* indicates min FDR <= ", FDR_CUT)
+  ) +
+  theme_pub(base = 10) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    legend.position = "right"
+  )
+
+heat_png <- file.path(res$base_dir, "Fig_MR_summary_heatmap_minFDR.png")
+heat_pdf <- file.path(res$base_dir, "Fig_MR_summary_heatmap_minFDR.pdf")
+heat_tsv <- file.path(res$base_dir, "Fig_MR_summary_heatmap_minFDR_data.tsv")
+
+if (SAVE_PNG) {
+  ggsave(filename = heat_png, plot = p_heat, width = 8.8, height = 6.6, dpi = 320)
+}
+if (SAVE_PDF) {
+  ggsave(filename = heat_pdf, plot = p_heat, width = 8.8, height = 6.6)
+}
+fwrite(heat_dt, heat_tsv, sep = "\t")
+
+## ---- 5B-2：Top hits 气泡图（显著优先） ----
+bub_dt <- copy(manh_dt)
+if (!"OR" %in% names(bub_dt)) {
+  if ("b" %in% names(bub_dt)) {
+    bub_dt[, OR := exp(as.numeric(b))]
+  } else {
+    bub_dt[, OR := NA_real_]
+  }
+}
+bub_dt[, log_or := suppressWarnings(log(as.numeric(OR)))]
+bub_dt[, neg_log10_fdr := -log10(pmax(fdr, 1e-300))]
+setorder(bub_dt, id.outcome, fdr, pval)
+
+bub_top <- bub_dt[
+  order(id.outcome, -sig_fdr, fdr, pval)
+][, head(.SD, 30), by = id.outcome]
+
+bub_top <- merge(bub_top, outcome_label_dt, by = "id.outcome", all.x = TRUE, suffixes = c("", ".label"))
+bub_top[, outcome_show := fifelse(!is.na(outcome_show.label) & nzchar(outcome_show.label), outcome_show.label, id.outcome)]
+bub_top[, outcome_show.label := NULL]
+
+p_bubble <- ggplot(
+  bub_top,
+  aes(x = outcome_show, y = CELL_TYPE)
+) +
+  geom_point(
+    aes(size = neg_log10_fdr, color = log_or),
+    alpha = 0.88
+  ) +
+  scico::scale_color_scico(
+    palette = "vik",
+    direction = -1,
+    name = "log(OR)"
+  ) +
+  scale_size_continuous(name = expression(-log[10](FDR)), range = c(1.2, 7.5)) +
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "MR top-hit bubble map",
+    subtitle = "Bubble size = -log10(FDR), color = log(OR)"
+  ) +
+  theme_pub(base = 10) +
+  theme(
+    panel.grid.major = element_line(linewidth = 0.2, color = "grey92"),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 20, hjust = 1),
+    legend.position = "right"
+  )
+
+bubble_png <- file.path(res$base_dir, "Fig_MR_summary_bubble_topHits.png")
+bubble_pdf <- file.path(res$base_dir, "Fig_MR_summary_bubble_topHits.pdf")
+bubble_tsv <- file.path(res$base_dir, "Fig_MR_summary_bubble_topHits_data.tsv")
+
+if (SAVE_PNG) {
+  ggsave(filename = bubble_png, plot = p_bubble, width = 9.8, height = 7.2, dpi = 320)
+}
+if (SAVE_PDF) {
+  ggsave(filename = bubble_pdf, plot = p_bubble, width = 9.8, height = 7.2)
+}
+fwrite(bub_top, bubble_tsv, sep = "\t")
+
+cat("[OK] 已输出补充汇总图：\n")
+if (SAVE_PNG) cat(heat_png, "\n", bubble_png, "\n")
+if (SAVE_PDF) cat(heat_pdf, "\n", bubble_pdf, "\n")
+cat(heat_tsv, "\n", bubble_tsv, "\n\n")
+
+
+## =========================================================
 ## 6. 逐个 outcome 作图
 ## 一个循环里同时输出：
 ##   1) 等宽横版
@@ -294,7 +419,7 @@ for (oid in as.character(res$outcome_ids)) {
         vjust = 0.5,
         size = 7
       ),
-      plot.margin = margin(5.5, 20, 5.5, 5.5)
+      plot.margin = margin(MARGIN_TOP, MARGIN_RIGHT_EQ, MARGIN_BOTTOM, MARGIN_LEFT)
     ) +
     coord_cartesian(clip = "off") +
     geom_hline(
@@ -355,9 +480,15 @@ for (oid in as.character(res$outcome_ids)) {
   }
   
   if (SAVE_PDF) {
-    pdf(out_pdf_i_eq, width = 14, height = 6.5)
-    print(p_i_eq)
-    dev.off()
+    ggsave(
+      filename = out_pdf_i_eq,
+      plot = p_i_eq,
+      width = 14,
+      height = 6.5,
+      device = "pdf",
+      limitsize = FALSE,
+      bg = "white"
+    )
   }
   
   fwrite(dt_i, out_tsv_i_eq, sep = "\t")
@@ -409,7 +540,7 @@ for (oid in as.character(res$outcome_ids)) {
     theme(
       panel.grid.minor = element_blank(),
       axis.text.y = element_text(size = 7),
-      plot.margin = margin(5.5, 50, 5.5, 5.5)
+      plot.margin = margin(MARGIN_TOP, MARGIN_RIGHT_FLIP, MARGIN_BOTTOM, MARGIN_LEFT)
     ) +
     coord_cartesian(clip = "off") +
     geom_vline(
@@ -470,9 +601,15 @@ for (oid in as.character(res$outcome_ids)) {
   }
   
   if (SAVE_PDF) {
-    pdf(out_pdf_i_flip, width = 10, height = 12)
-    print(p_i_flip)
-    dev.off()
+    ggsave(
+      filename = out_pdf_i_flip,
+      plot = p_i_flip,
+      width = 10,
+      height = 12,
+      device = "pdf",
+      limitsize = FALSE,
+      bg = "white"
+    )
   }
   
   fwrite(dt_i, out_tsv_i_flip, sep = "\t")
@@ -484,4 +621,5 @@ for (oid in as.character(res$outcome_ids)) {
 }
 
 cat("[DONE] 全部完成。\n")
+cat("说明：PDF 已按投稿风格导出，并设置四边留白避免文字/标签被裁切。\n")
 cat("总底表：\n", out_all_tsv, "\n")
