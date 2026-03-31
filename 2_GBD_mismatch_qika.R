@@ -35,6 +35,9 @@ GBD_OUTCOME_FILE <- "W:/Current_Work/GBD_h/GBD/IHME_GBD_2023_DATA-2106ed8d-1.csv
 GBD_POP_FILE <- "W:/Current_Work/GBD_h/GBD/IHME_GBD_2023_DATA-e2b105d2-1.csv"
 SDI_FILE <- "W:/Current_Work/GBD_h/GBD/IHME_GBD_SDI_2021_SDI_1950_2021_Y2024M05D16.csv"
 
+# 输出目录策略：优先放在分析数据目录旁（更贴近分析文件）
+USE_DATA_DIR_AS_OUTPUT_ROOT <- TRUE
+
 # 输出目录：尽量和分析脚本在一起
 get_script_dir <- function() {
   args <- commandArgs(trailingOnly = FALSE)
@@ -47,7 +50,9 @@ get_script_dir <- function() {
 }
 
 SCRIPT_DIR <- get_script_dir()
-OUT_DIR <- file.path(SCRIPT_DIR, paste0("outputs_mismatch_", YEAR_MODE))
+DATA_DIR <- normalizePath(dirname(ANN6_FILE), winslash = "/", mustWork = FALSE)
+OUT_ROOT <- if (isTRUE(USE_DATA_DIR_AS_OUTPUT_ROOT)) DATA_DIR else SCRIPT_DIR
+OUT_DIR <- file.path(OUT_ROOT, paste0("outputs_mismatch_", YEAR_MODE))
 dir.create(OUT_DIR, recursive = TRUE, showWarnings = FALSE)
 
 ## =========================================================
@@ -357,7 +362,7 @@ table1_print <- table1_df %>%
       Phenotype == "Low RBC / Low fatality"   ~ "Low RBC /\nLow fatality",
       TRUE                                      ~ "High RBC /\nLow fatality"
     ),
-    Country = str_wrap(Country, width = 13),
+    Country = str_wrap(Country, width = 11),
     `RBC/1,000` = sprintf("%.2f", `RBC/1,000`),
     `Deaths/1,000 cases` = sprintf("%.2f", `Deaths/1,000 cases`),
     Incidence = comma(round(Incidence, 0)),
@@ -368,24 +373,24 @@ table1_print <- table1_df %>%
 core_fill <- rep(c("white", "#F7F9FC"), length.out = nrow(table1_print))
 
 table_theme <- ttheme_minimal(
-  base_size = 7.4,
+  base_size = 6.8,
   core = list(
     fg_params = list(
       col = "#222222",
-      fontsize = 7.4,
+      fontsize = 6.8,
       hjust = c(0, 0.5, 0, 1, 1, 1, 1, 1),
       x = c(0.02, 0.50, 0.02, 0.98, 0.98, 0.98, 0.98, 0.98)
     ),
     bg_params = list(fill = core_fill, col = NA)
   ),
   colhead = list(
-    fg_params = list(col = "white", fontsize = 7.6, fontface = "bold"),
+    fg_params = list(col = "white", fontsize = 7.0, fontface = "bold"),
     bg_params = list(fill = "#2F4858", col = NA)
   )
 )
 
 tbl_grob <- tableGrob(table1_print, rows = NULL, theme = table_theme)
-tbl_grob$widths <- unit(c(0.23, 0.05, 0.16, 0.10, 0.14, 0.10, 0.09, 0.07), "npc")
+tbl_grob$widths <- unit(c(0.21, 0.05, 0.14, 0.10, 0.13, 0.10, 0.09, 0.06), "npc")
 
 table_title <- textGrob(
   paste0("Table 1. Top ", LABEL_N_PER_QUADRANT, " countries within each mismatch phenotype in ", YEAR_MODE),
@@ -400,7 +405,7 @@ table_note <- textGrob(
 )
 
 table_page <- arrangeGrob(table_title, tbl_grob, table_note,
-  heights = unit.c(unit(0.35, "in"), unit(1, "null"), unit(0.32, "in")))
+  heights = unit.c(unit(0.32, "in"), unit(1, "null"), unit(0.28, "in")))
 
 ## =========================================================
 ## 8. 导出（全部在脚本同级 outputs 目录）
@@ -433,17 +438,17 @@ write_tsv(table1_df, out_table_tsv)
 ggsave(filename = out_plot_png, plot = p, width = 9, height = 6.4, dpi = 600, bg = "white")
 ggsave(filename = out_plot_pdf, plot = p, width = 9, height = 6.4, device = "pdf", bg = "white")
 
-pdf(file = out_table_pdf, width = 12, height = 8.5, onefile = TRUE)
+pdf(file = out_table_pdf, width = 13, height = 9, onefile = TRUE)
 grid.newpage()
-pushViewport(viewport(x = 0.5, y = 0.5, width = 0.88, height = 0.84, just = c("center", "center")))
+pushViewport(viewport(x = 0.5, y = 0.5, width = 0.80, height = 0.74, just = c("center", "center")))
 grid.draw(table_page)
 popViewport()
 dev.off()
 
-pdf(file = out_combo_pdf, width = 12, height = 8.5, onefile = TRUE)
+pdf(file = out_combo_pdf, width = 13, height = 9, onefile = TRUE)
 print(p)
 grid.newpage()
-pushViewport(viewport(x = 0.5, y = 0.5, width = 0.88, height = 0.84, just = c("center", "center")))
+pushViewport(viewport(x = 0.5, y = 0.5, width = 0.80, height = 0.74, just = c("center", "center")))
 grid.draw(table_page)
 popViewport()
 dev.off()
