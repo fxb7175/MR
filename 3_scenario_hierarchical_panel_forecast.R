@@ -179,12 +179,17 @@ improve_pred <- ref_pred %>%
 
 # 给定 rbc 场景，预测 dir/incidence/deaths
 predict_burden <- function(dt, rbc_col, scenario_name) {
+  # 先把模型依赖列显式写入 newdata，避免在同一个 mutate 中预测时找不到列
   dt2 <- dt %>%
     mutate(
       rbc_per_1000 = .data[[rbc_col]],
-      sdi = sdi_base,
-      dir_pred = exp(predict(m_dir, newdata = ., allow.new.levels = TRUE)),
-      inc_pred = exp(predict(m_inc, newdata = ., allow.new.levels = TRUE)),
+      sdi = sdi_base
+    )
+  
+  dt2 <- dt2 %>%
+    mutate(
+      dir_pred = exp(predict(m_dir, newdata = dt2, allow.new.levels = TRUE)),
+      inc_pred = exp(predict(m_inc, newdata = dt2, allow.new.levels = TRUE)),
       deaths_pred = dir_pred / 1000 * inc_pred,
       scenario = scenario_name
     )
