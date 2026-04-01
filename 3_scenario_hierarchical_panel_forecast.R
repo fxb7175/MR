@@ -73,28 +73,42 @@ test_df  <- hist_df %>% filter(year > TRAIN_END_YEAR)
 
 if (nrow(train_df) < 50) stop("训练样本太少，请检查 PANEL_FILE。")
 
+# 训练集中心化年份，提升模型稳定性
+year_center <- mean(train_df$year, na.rm = TRUE)
+train_df <- train_df %>% mutate(year_c = year - year_center)
+test_df  <- test_df %>% mutate(year_c = year - year_center)
+
+# 根据训练集时间跨度自动选择年份项（避免 ns 在边界年过少时报错/警告）
+n_year_unique <- dplyr::n_distinct(train_df$year)
+year_term <- if (n_year_unique >= 6) "ns(year, df = 3)" else "year_c"
+
+# 根据每个国家观测密度自动选择随机效应结构，避免 RE 参数不可识别
+obs_by_country <- train_df %>% count(iso3, name = "n_obs")
+can_use_random_slope <- nrow(obs_by_country) >= 20 && median(obs_by_country$n_obs, na.rm = TRUE) >= 4
+re_term <- if (can_use_random_slope) "(1 + year_c | iso3)" else "(1 | iso3)"
+
 ## =========================================================
 ## 2. 分层面板模型（两个底层量 + incidence）
 ## =========================================================
 m_rbc <- lmer(
-  log(rbc_per_1000) ~ ns(year, df = 3) + sdi + (1 + year | iso3),
+  as.formula(paste0("log(rbc_per_1000) ~ ", year_term, " + sdi + ", re_term)),
   data = train_df,
   REML = FALSE,
-  control = lmerControl(check.rankX = "ignore")
+  control = lmerControl(check.rankX = "ignore", check.conv.singular = "ignore")
 )
 
 m_dir <- lmer(
-  log(dir_per_1000) ~ ns(year, df = 3) + sdi + log(rbc_per_1000) + (1 + year | iso3),
+  as.formula(paste0("log(dir_per_1000) ~ ", year_term, " + sdi + log(rbc_per_1000) + ", re_term)),
   data = train_df,
   REML = FALSE,
-  control = lmerControl(check.rankX = "ignore")
+  control = lmerControl(check.rankX = "ignore", check.conv.singular = "ignore")
 )
 
 m_inc <- lmer(
-  log(incidence) ~ ns(year, df = 3) + sdi + (1 + year | iso3),
+  as.formula(paste0("log(incidence) ~ ", year_term, " + sdi + ", re_term)),
   data = train_df,
   REML = FALSE,
-  control = lmerControl(check.rankX = "ignore")
+  control = lmerControl(check.rankX = "ignore", check.conv.singular = "ignore")
 )
 
 ## =========================================================
@@ -137,8 +151,9 @@ future_grid <- tidyr::expand_grid(
   year = FORECAST_YEARS
 ) %>%
   left_join(country_base, by = "iso3") %>%
+  mutate(year_c = year - year_center) %>%
   mutate(country = coalesce(country.x, country.y)) %>%
-  select(iso3, country, region, year, sdi_base, rbc_base)
+  select(iso3, country, region, year, year_c, sdi_base, rbc_base)
 
 # 参考情景：按历史趋势前推
 ref_pred <- future_grid %>%
