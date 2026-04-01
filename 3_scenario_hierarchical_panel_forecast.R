@@ -152,7 +152,7 @@ future_grid <- tidyr::expand_grid(
 ) %>%
   left_join(country_base, by = "iso3") %>%
   mutate(year_c = year - year_center) %>%
-  mutate(country = coalesce(country.x, country.y)) %>%
+  mutate(country = as.character(country)) %>%
   select(iso3, country, region, year, year_c, sdi_base, rbc_base)
 
 # 参考情景：按历史趋势前推
